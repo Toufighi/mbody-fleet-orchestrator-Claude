@@ -79,8 +79,9 @@ Adding a 4th OEM (`CyberClean CC-1000`) required implementing **only** `CyberCle
 ### Binding Resource Constraint Calculation
 For any scrubber robot, the operational runtime before requiring a service stop is bounded by the tighter resource constraint:
 
+```math
 $$\text{Runtime Limit} = \min\left(T_{\text{battery\_rem}}, T_{\text{water\_rem}}\right)$$
-
+```
 This is implemented directly in `src/scheduler/optimizer.ts`:
 ```typescript
 const battMinsAvail = Math.floor(battHoursAvail * 60);
@@ -97,6 +98,14 @@ Clean water is treated as a first-class binding constraint, equal in priority to
 - **Dock Travel & Arbitration**: `src/scheduler/dockManager.ts` computes travel time geometrically between zone coordinates (roughly 3-15 minutes depending on distance), sorts candidate docks by proximity, and — when the nearest dock is at capacity — compares **queue-wait time** against **rerouting to an alternate dock**, weighing idle battery loss either way. This is not a FIFO queue; it's a cost comparison per request. See the `evaluateAndReserveDock()` method for the full decision logic.
 
 ### Scheduling Cost Function (as actually implemented)
+
+### Objective Function Formulation
+```math
+$$\text{Maximize } \mathcal{Z} = \sum_{z \in \mathcal{Z}} \text{SqFt}(z) \cdot U(z) - \lambda \cdot \text{Cost}_{\text{transit}} - \mu \cdot \text{Cost}_{\text{water\_stops}} - \alpha \cdot \text{SLA}_{\text{penalty}}$$
+```
+- **Primary Objective**: Total Operating Cost Optimization (maximizing coverage efficiency and fleet utilization).
+- **Hospital SLA Hard Constraints**: Sterile hospital zones ($Z2$ ED, $Z5$ Patient Halls, $Z7$ Radiology) are prioritized with heavy penalty weights ($\alpha$, $10\times$ criticality multiplier).
+
 Rather than a single global objective maximized over the whole shift, the scheduler assigns zones one at a time to the lowest-cost eligible robot. In `ML_PROACTIVE` mode, the cost score for a candidate robot/zone/time combination is:
 ```typescript
 let costScore = totalJobMins;
@@ -352,7 +361,8 @@ npm run build
 
 ## 11. Demo
 
+For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §9.
+
 An earlier, Gemini-based build of this system's UI is hosted at:
 https://ai.studio/apps/04844540-54d5-4ad7-b8bf-23e44b945118?fullscreenApplet=true
-
-**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly. For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §9.
+**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly.
