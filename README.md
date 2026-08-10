@@ -79,8 +79,9 @@ Adding a 4th OEM (`CyberClean CC-1000`) required implementing **only** `CyberCle
 ### Binding Resource Constraint Calculation
 For any scrubber robot, the operational runtime before requiring a service stop is bounded by the tighter resource constraint:
 
+```math
 $$\text{Runtime Limit} = \min\left(T_{\text{battery\_rem}}, T_{\text{water\_rem}}\right)$$
-
+```
 This is implemented directly in `src/scheduler/optimizer.ts`:
 ```typescript
 const battMinsAvail = Math.floor(battHoursAvail * 60);
@@ -304,7 +305,8 @@ npm run build
 
 ## 11. Demo
 
+For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §9.
+
 An earlier, Gemini-based build of this system's UI is hosted at:
 https://ai.studio/apps/04844540-54d5-4ad7-b8bf-23e44b945118?fullscreenApplet=true
-
-**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly. For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §9.
+**Note:**  that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly. 
