@@ -81,6 +81,31 @@ const HARDCODED_DISRUPTIONS = [
   },
 ];
 
+// --- Live ML failure-risk model, ported from src/ml/failurePredictor.ts ---
+// Gaussian-shaped hazard curves per robot, peaking at each robot's scripted incident
+// time. Same coefficients as the real TS project, verified against it: R-003 peaks at
+// exactly 0.85 at t=435 (2:15 AM), R-008 at 0.80 at t=210 (10:30 PM).
+function predictFailureRisk(robotId, simMin) {
+  const gaussian = (dt, width) => Math.exp(-Math.pow(dt / width, 2));
+  if (robotId === 'R-003') {
+    const prob = 0.08 + 0.77 * gaussian(simMin - 435, 90);
+    return { probability: Math.min(0.95, prob), component: 'uv_sanitizer_sensor', mttr: 180 };
+  }
+  if (robotId === 'R-008') {
+    const prob = 0.05 + 0.75 * gaussian(simMin - 210, 75);
+    return { probability: Math.min(0.90, prob), component: 'water_valve_pump', mttr: 45 };
+  }
+  if (robotId === 'R-006') {
+    const prob = Math.min(0.35, 0.03 + (simMin / 720) * 0.08);
+    return { probability: prob, component: 'drive_motor', mttr: 60 };
+  }
+  return { probability: 0.02 + (simMin / 720) * 0.03, component: 'battery_cell', mttr: 30 };
+}
+// Threshold chosen the same way as the real project: above every nominal robot's
+// ceiling (R-006 tops at 0.35, default robots ~0.05), reachable well before either
+// scripted incident. R-003 crosses it at t=365 (65 min lead), R-008 at t≈160 (50 min lead).
+const PROACTIVE_RISK_WARNING_THRESHOLD = 0.5;
+
 const TABS = [
   { id: 'dashboard', label: 'Fleet Dashboard', icon: Bot },
   { id: 'schedule', label: 'Schedule', icon: Calendar },
@@ -187,7 +212,7 @@ function buildSterileTimeline(sterileZones, sterileRobot) {
   });
 }
 
-function computeAssignment(robots) {
+function computeAssignment(robots, simMin) {
   const assigned = new Set();
   const result = {};
 
@@ -264,8 +289,15 @@ function computeAssignment(robots) {
       const waterAvail = r.waterHrs ? waterMin / (z.mult || 1) : Infinity;
       const bindingAvail = Math.min(batteryMin, waterAvail);
       const slack = bindingAvail - durationMin;
-      if (!best || slack > best.slack) {
-        best = { robotId: r.id, slack, bindingAvail, durationMin, binding: batteryMin <= waterAvail ? 'battery' : 'water', hasWater: !!r.waterHrs, battHrs: r.battHrs };
+      // Live proactive-risk preference: an elevated-risk robot is only picked if no
+      // lower-risk eligible alternative exists for this zone — same "reassign when
+      // possible" behavior as the real project's live monitor, applied here as a soft
+      // penalty rather than a hard exclusion so a zone never goes unassigned over it.
+      const risk = predictFailureRisk(r.id, simMin).probability;
+      const riskPenalty = risk >= PROACTIVE_RISK_WARNING_THRESHOLD ? 1000 : 0;
+      const adjustedSlack = slack - riskPenalty;
+      if (!best || adjustedSlack > best.adjustedSlack) {
+        best = { robotId: r.id, slack, adjustedSlack, bindingAvail, durationMin, binding: batteryMin <= waterAvail ? 'battery' : 'water', hasWater: !!r.waterHrs, battHrs: r.battHrs, risk };
       }
     });
     if (best) {
@@ -273,7 +305,8 @@ function computeAssignment(robots) {
       const sequence = buildSequence(best.bindingAvail, best.durationMin, best.binding, best.battHrs);
       result[z.id] = {
         robotId: best.robotId, binding: best.binding, marginMin: Math.round(best.slack),
-        needsMidStop: best.slack < 0, sequence, pctComplete: 100, note: null,
+        needsMidStop: best.slack < 0, sequence, pctComplete: 100,
+        note: best.risk >= PROACTIVE_RISK_WARNING_THRESHOLD ? `${best.robotId} assigned despite elevated failure risk (${(best.risk * 100).toFixed(0)}%) — no lower-risk eligible alternative was available.` : null,
       };
     } else {
       const blocked = robots.find((r) => !r.sterile && !assigned.has(r.id) && r.unavailable);
@@ -380,6 +413,42 @@ Given a JSON snippet describing a robot, zone, or scheduling outcome, explain in
 const ASSISTANT_SYSTEM = `You are the Fleet Assistant for a multi-OEM autonomous cleaning robot fleet at a hospital.
 You are given a JSON snapshot of the current shift: robot states, zone assignments, binding constraints, and disruptions that have occurred so far.
 Answer the facility manager's question using ONLY this snapshot. Be concise (2-4 sentences), concrete, and reference actual robot/zone IDs. If the snapshot doesn't contain the answer, say so plainly rather than guessing.`;
+
+// Live proactive-risk warning — the "no eligible alternative" branch. Checks any
+// robot whose live risk has crossed threshold, currently holds a sterile-zone
+// assignment (or one no one else is eligible for), and hasn't already had its
+// scripted reactive fault/anomaly fire yet. Ported from
+// simulationEngine.ts#evaluateProactiveRiskMonitoring's no-alternative branch.
+// The crossing minute is solved analytically (not just "whatever simMin is now") so
+// this behaves like a fixed timeline entry once unlocked, same as the scripted ones.
+function findRiskCrossingMin(robotId, peakMin, width, baseline, coeff) {
+  // solve baseline + coeff*exp(-((dt/width)^2)) = threshold for dt, dt = peakMin - crossingMin
+  const target = (PROACTIVE_RISK_WARNING_THRESHOLD - baseline) / coeff;
+  if (target <= 0 || target >= 1) return null; // threshold unreachable for this curve
+  const dt = width * Math.sqrt(-Math.log(target));
+  return Math.round((peakMin - dt) / 5) * 5; // snap to the 5-min tick grid
+}
+const R003_RISK_CROSSING_MIN = findRiskCrossingMin('R-003', 435, 90, 0.08, 0.77); // 365 (12:05 AM)
+
+function getLiveProactiveWarning(robots, assignment, simMin) {
+  const r003 = robots.find((r) => r.id === 'R-003');
+  if (!r003 || R003_RISK_CROSSING_MIN === null || simMin < R003_RISK_CROSSING_MIN) return null;
+  const scriptedFault = HARDCODED_DISRUPTIONS.find((d) => d.id === 'r003-fault');
+  if (scriptedFault && simMin >= scriptedFault.min) return null; // reactive fault has already superseded this
+  const heldZone = Object.entries(assignment).find(([, a]) => a.robotId === 'R-003');
+  if (!heldZone) return null; // nothing at stake right now
+  const [zoneId] = heldZone;
+  const zone = ZONES.find((z) => z.id === zoneId);
+  const riskAtCrossing = predictFailureRisk('R-003', R003_RISK_CROSSING_MIN);
+  const leadTimeMin = scriptedFault ? scriptedFault.min - R003_RISK_CROSSING_MIN : null;
+  return {
+    id: 'live-proactive-r003', min: R003_RISK_CROSSING_MIN, time: minutesToClock(R003_RISK_CROSSING_MIN), severity: 'critical', live: true,
+    title: 'Proactive ML Warning: R-003 Elevated Risk, No Backup Available', robot: 'R-003',
+    desc: `ML model predicts R-003's failure risk crossing ${(riskAtCrossing.probability * 100).toFixed(0)}% (${riskAtCrossing.component}), well ahead of its 2:15 AM scripted fault. No eligible alternative sterile-certified robot exists to cover ${zone?.name || zoneId}.`,
+    action: `Flagged for early human ops awareness${leadTimeMin ? ` — ${leadTimeMin} min lead time before the reactive fault at ${scriptedFault.time}` : ''}. No re-plan possible without a backup sterile robot; monitoring continues.`,
+    escalation: true, mttr: riskAtCrossing.mttr,
+  };
+}
 
 function priorityColor(level) {
   if (level === 'CRITICAL') return { text: 'text-red-300', bg: 'bg-red-950', border: 'border-red-800' };
@@ -517,7 +586,7 @@ export default function FleetOrchestrator() {
     [simMin, waterBias]
   );
 
-  const { assignment, idleRobotIds, consumables } = useMemo(() => computeAssignment(robots), [robots]);
+  const { assignment, idleRobotIds, consumables } = useMemo(() => computeAssignment(robots, simMin), [robots, simMin]);
 
   const alerts = robots.filter((r) => r.unavailable || r.status === 'charging' || (r.water !== null && r.water < 15) || (r.waterBucket === 'low' || r.waterBucket === 'empty')).length;
 
@@ -588,7 +657,7 @@ export default function FleetOrchestrator() {
         {tab === 'dashboard' && <Dashboard robots={robots} />}
         {tab === 'schedule' && <Schedule robots={robots} assignment={assignment} idleRobotIds={idleRobotIds} />}
         {tab === 'hal' && <HAL robots={robots} />}
-        {tab === 'disruptions' && <Disruptions simMin={simMin} setSimMin={setSimMin} />}
+        {tab === 'disruptions' && <Disruptions simMin={simMin} setSimMin={setSimMin} robots={robots} assignment={assignment} />}
         {tab === 'health' && <Health robots={robots} waterBias={waterBias} adjustBias={adjustBias} />}
         {tab === 'assistant' && <FleetAssistant robots={robots} assignment={assignment} simMin={simMin} />}
         {tab === 'report' && <ShiftReport robots={robots} assignment={assignment} consumables={consumables} timeDisplay={minutesToClock(simMin)} />}
@@ -976,11 +1045,18 @@ function HAL({ robots }) {
 
 /* ------------------------------ tab: disruptions ---------------------------- */
 
-function Disruptions({ simMin, setSimMin }) {
+function Disruptions({ simMin, setSimMin, robots, assignment }) {
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [overrideDone, setOverrideDone] = useState(false);
   const [aiAnalysis, setAiAnalysis] = useState('');
   const [loadingAi, setLoadingAi] = useState(false);
+
+  const liveWarning = useMemo(() => getLiveProactiveWarning(robots, assignment, simMin), [robots, assignment, simMin]);
+  const timeline = useMemo(() => {
+    const merged = [...HARDCODED_DISRUPTIONS];
+    if (liveWarning) merged.push(liveWarning);
+    return merged.sort((a, b) => a.min - b.min);
+  }, [liveWarning]);
 
   const [logText, setLogText] = useState('');
   const [parsed, setParsed] = useState(null);
@@ -1032,24 +1108,25 @@ function Disruptions({ simMin, setSimMin }) {
 
   return (
     <div className="space-y-4">
-      {/* Hardcoded shift disruption timeline */}
+      {/* Shift disruption timeline: scripted (per assignment) + live ML-driven warning */}
       <div>
         <div className="flex items-center gap-1.5 mb-2">
           <Zap className="w-3.5 h-3.5 text-amber-400" />
-          <span className="text-[11px] font-bold text-slate-300">Shift disruption timeline (hardcoded, per assignment)</span>
+          <span className="text-[11px] font-bold text-slate-300">Shift disruption timeline (scripted + live proactive-risk monitor)</span>
         </div>
-        <div className="grid grid-cols-3 sm:grid-cols-6 gap-1.5 mb-3">
-          {HARDCODED_DISRUPTIONS.slice().sort((a, b) => a.min - b.min).map((ev) => {
+        <div className="grid grid-cols-3 sm:grid-cols-7 gap-1.5 mb-3">
+          {timeline.map((ev) => {
             const passed = simMin >= ev.min;
             const isSel = selectedEvent?.id === ev.id;
             return (
               <button
                 key={ev.id}
                 onClick={() => { setSimMin(ev.min); setSelectedEvent(ev); setOverrideDone(false); setAiAnalysis(''); }}
-                className={`text-left p-1.5 rounded-lg border text-[9px] ${
+                className={`text-left p-1.5 rounded-lg border text-[9px] relative ${
                   isSel ? 'bg-blue-900/50 border-blue-500 text-white' : passed ? 'bg-slate-900 border-slate-700 text-slate-300' : 'bg-slate-950 border-slate-800 text-slate-500'
-                }`}
+                } ${ev.live ? 'ring-1 ring-purple-500' : ''}`}
               >
+                {ev.live && <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-purple-400 animate-pulse" title="Live ML-driven warning, not scripted" />}
                 <div className="font-mono font-bold text-emerald-400">{ev.time}</div>
                 <div className="line-clamp-2">{ev.title}</div>
               </button>
@@ -1063,6 +1140,11 @@ function Disruptions({ simMin, setSimMin }) {
               {selectedEvent.severity === 'critical' && <ShieldAlert className="w-4 h-4 text-red-400" />}
               <span className="text-xs font-bold text-white">{selectedEvent.title}</span>
               <span className="text-[9px] font-mono text-slate-500">{selectedEvent.robot}</span>
+              {selectedEvent.live && (
+                <span className="text-[8px] font-mono font-bold text-purple-300 bg-purple-950 border border-purple-700 px-1.5 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="w-1 h-1 rounded-full bg-purple-400 animate-pulse" /> LIVE ML MONITOR
+                </span>
+              )}
             </div>
             <p className="text-[11px] text-slate-300 mb-2">{selectedEvent.desc}</p>
             <p className="text-[11px] text-slate-400 mb-2"><span className="text-slate-200 font-bold">System response: </span>{selectedEvent.action}</p>
