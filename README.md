@@ -129,8 +129,7 @@ Adding a 4th OEM (`CyberClean CC-1000`) required implementing **only** `CyberCle
 For any scrubber robot, the operational runtime before requiring a service stop is bounded by the tighter resource constraint:
 
 ```math
-$$	ext{Runtime Limit} = \min\left(T_{	ext{battery\_rem}}, T_{	ext{water\_rem}}
-ight)$$
+$$\text{Runtime Limit} = \min\left(T_{\text{battery\_rem}}, T_{\text{water\_rem}}\right)$$
 ```
 This is implemented directly in `src/scheduler/optimizer.ts`:
 ```typescript
