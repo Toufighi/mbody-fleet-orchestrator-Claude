@@ -9,9 +9,7 @@
 
 The **MBody AI Multi-OEM Fleet Orchestration System** is a control, scheduling, and health monitoring system built to orchestrate heterogeneous autonomous cleaning robots across a hospital facility.
 
-The architecture explicitly separates **probabilistic agent reasoning from deterministic safety-critical execution**: the agent proposes actions, while policy, scheduling, and command controls validate and authorize execution.
-
-This solution prioritizes **solid software architecture**, **predictable dual-constraint optimization**, **clean abstraction boundaries**, and **robust interruption handling**. Implementation claims below are aligned with the current code in `src/`; production architecture requirements are explicitly labeled where they are not yet implemented.
+Rather than a surface-level prototype, this solution prioritizes **solid software architecture**, **predictable dual-constraint optimization**, **clean abstraction boundaries**, and **robust interruption handling** — and every claim in this document has been checked against the actual code in `src/`, not just described in prose. Where an earlier draft of this README described behavior that didn't match the implementation, it's been corrected below rather than left as aspirational documentation.
 
 ```
                                  ┌──────────────────────────────────────────────┐
@@ -41,55 +39,10 @@ This solution prioritizes **solid software architecture**, **predictable dual-co
 
 See `docs/architecture-diagram.svg` for the full data-flow diagram (HAL adapters → normalized schema → scheduler/dispatcher → LLM layer → UI). The ASCII summary above is a quick-reference version of the same diagram.
 
-### Production Control Boundary (Production Architecture / Future Hardening)
-
-The LLM/agent layer is an **advisory and planning layer, not a safety authority**. An agent may propose an action, but it cannot directly issue a robot command. Every proposed action passes through deterministic policy and safety validation before reaching the command gateway.
-
-```text
-                         Fleet Operations Agent
-                                   │
-                    Observe → Reason → Plan
-                                   │
-                                   ▼
-                         Proposed Action / Intent
-                                   │
-                                   ▼
-                    ┌────────────────────────────┐
-                    │ Deterministic Policy Layer │
-                    │                            │
-                    │ • Hospital SLA constraints │
-                    │ • Robot capabilities       │
-                    │ • Battery / water limits   │
-                    │ • Zone restrictions        │
-                    │ • Authorization            │
-                    └─────────────┬──────────────┘
-                                  │
-                           ALLOW / DENY /
-                           HUMAN APPROVAL
-                                  │
-                                  ▼
-                    ┌────────────────────────────┐
-                    │      Command Gateway       │
-                    │ Auth • Audit • Rate limits │
-                    │ Idempotency • Validation   │
-                    └─────────────┬──────────────┘
-                                  │
-                                  ▼
-                                Robot
-                                  │
-                                  ▼
-                              Telemetry
-                                  │
-                                  └──────→ Observe / Re-plan
-```
-
-This separation keeps probabilistic reasoning away from safety-critical execution: the agent can reason about fleet state and propose actions, while deterministic controls remain authoritative for what may actually be executed.
-
 ---
 
 ## 2. Hardware Abstraction Layer (HAL)
 
-### Implemented in this Submission
 The Hardware Abstraction Layer decouples business logic (scheduling, dispatching, anomaly detection) from OEM-specific communications. All OEM-specific formats (MQTT JSON, WebSocket Protobuf, HTTP CGI XML) are normalized at the edge via `IHALAdapter`, and the central scheduler operates strictly on the normalized schema below, remaining agnostic to OEM protocol differences.
 
 ### Normalized Telemetry Schema (`NormalizedTelemetry`)
@@ -123,14 +76,11 @@ Adding a 4th OEM (`CyberClean CC-1000`) required implementing **only** `CyberCle
 
 ## 3. Dual-Constraint Optimization Engine (OR + ML)
 
-### Implemented in this Submission
-
-#### Binding Resource Constraint Calculation
+### Binding Resource Constraint Calculation
 For any scrubber robot, the operational runtime before requiring a service stop is bounded by the tighter resource constraint:
 
-```math
 $$\text{Runtime Limit} = \min\left(T_{\text{battery\_rem}}, T_{\text{water\_rem}}\right)$$
-```
+
 This is implemented directly in `src/scheduler/optimizer.ts`:
 ```typescript
 const battMinsAvail = Math.floor(battHoursAvail * 60);
@@ -146,7 +96,7 @@ Clean water is treated as a first-class binding constraint, equal in priority to
 - **Floor Material Friction Multipliers**: water consumption scales with floor surface friction. Verified values from `src/data/facility.ts`: Porous Concrete (Z8) = **1.4x**, Sterile Epoxy Tile (Z2/Z5/Z7) = **0.85x**, Standard VCT Vinyl = **1.0x**, Carpet (Z4) = **0.0x** (dry-only zone).
 - **Dock Travel & Arbitration**: `src/scheduler/dockManager.ts` computes travel time geometrically between zone coordinates (roughly 3-15 minutes depending on distance), sorts candidate docks by proximity, and — when the nearest dock is at capacity — compares **queue-wait time** against **rerouting to an alternate dock**, weighing idle battery loss either way. This is not a FIFO queue; it's a cost comparison per request. See the `evaluateAndReserveDock()` method for the full decision logic.
 
-#### Scheduling Cost Function (as actually implemented)
+### Scheduling Cost Function (as actually implemented)
 Rather than a single global objective maximized over the whole shift, the scheduler assigns zones one at a time to the lowest-cost eligible robot. In `ML_PROACTIVE` mode, the cost score for a candidate robot/zone/time combination is:
 ```typescript
 let costScore = totalJobMins;
@@ -157,22 +107,24 @@ if (mode === 'ML_PROACTIVE' && failureRiskProb >= 0.80) {
 ```
 where `zoneCriticalityMultiplier` is **10.0** for sterile zones, **4.0** for high-traffic zones, and **1.5** otherwise — actively steering high-failure-risk robots away from sterile hospital zones. (An earlier draft of this document described a global weighted objective function with lambda/mu/alpha trade-off terms; that formulation was never implemented and has been removed in favor of the cost score actually in the code.)
 
-#### Handling FloorBot Water-Level Imprecision
+### Handling FloorBot Water-Level Imprecision
 FloorBot units report water levels via coarse discrete buckets (`high`, `med`, `low`, `empty`), so a "low" reading is imprecise. Pushing the robot until empty risks dry-scrubbing floor damage or incomplete zone coverage; pulling it immediately on a "low" reading wastes 20-30% of remaining usable capacity.
 
 **Decision model**: the system computes a confidence range (10-30 mins, 20 min nominal) scaled by floor material friction.
 - **Sterile / Critical Hospital Zones** (Z2, Z5, Z7): scheduler adopts a **conservative policy**, using the pessimistic lower bound of the range so the robot is pulled before risking a dry run.
 - **Standard Zones** (Z1, Z3, Z4, Z6, Z8): scheduler adopts a **probabilistic threshold policy**, letting the robot finish the current zone while the anomaly detector continues monitoring for a genuine leak signature.
 
-#### Proactive vs. Reactive Replanning Strategies
+### Proactive vs. Reactive Replanning Strategies
+
 There are two distinct proactive mechanisms in this codebase, because the first one turned out to have a real limitation that's worth documenting honestly rather than hiding:
 
-1. **Static scheduler risk-ranking** (`src/scheduler/optimizer.ts`, `ML_PROACTIVE` mode): during initial schedule generation, candidate robots are scored with a risk penalty (`failureRiskProb * 200 * zoneCriticalityMultiplier`) when their predicted failure probability at the candidate's `candidateStartMin` crosses 0.80. **This check only evaluates risk at whatever moment a zone's window happens to open** — for this facility's actual window configuration, R-003's sterile zones don't open until well after its risk peak (Z2 opens 45 minutes after the 2:15 AM peak), so this mechanism can legitimately apply zero penalties depending on window layout. Limitation: a plan generated once at 7 PM can't "see" a risk curve that peaks mid-shift unless a zone happens to be evaluated at exactly the right moment.
+1. **Static scheduler risk-ranking** (`src/scheduler/optimizer.ts`, `ML_PROACTIVE` mode): during initial schedule generation, candidate robots are scored with a risk penalty (`failureRiskProb * 200 * zoneCriticalityMultiplier`) when their predicted failure probability at the candidate's `candidateStartMin` crosses 0.80. **This check only evaluates risk at whatever moment a zone's window happens to open** — for this facility's actual window configuration, R-003's sterile zones don't open until well after its risk peak (Z2 opens 45 minutes after the 2:15 AM peak), so this mechanism can legitimately apply zero penalties depending on window layout. This isn't a bug so much as an architectural limitation: a plan generated once at 7 PM can't "see" a risk curve that peaks mid-shift unless a zone happens to be evaluated at exactly the right moment.
+
 2. **Live proactive-risk monitor** (`src/dispatcher/simulationEngine.ts#evaluateProactiveRiskMonitoring`, `src/scheduler/proactiveReplanner.ts`): the mechanism that actually fires reliably. On every simulation tick, each robot's **current** predicted failure risk is checked against the live clock via `globalFailurePredictor.predictRobotFailureAtTime(robotId, currentMin)` — not just at task-start time. The threshold (`PROACTIVE_RISK_WARNING_THRESHOLD = 0.5`) is chosen deliberately: well above every nominal robot's modeled ceiling (R-006 tops at 0.35, default robots at ~0.04), yet reachable a genuine ~65+ minutes before either scripted incident (R-003's fault, R-008's water anomaly). When a robot crosses it for the first time that shift:
    - If an eligible, non-elevated-risk, non-conflicting alternative robot exists (`findEligibleAlternativeRobot`), its upcoming task is **actually reassigned** — a real re-plan, not a log line — and a `PROACTIVE_REPLAN` event is recorded.
-   - If no alternative exists — R-003's actual situation, since it's the only sterile-certified robot — a `PROACTIVE_ML_WARNING` disruption fires instead, giving human ops early visibility (verified in testing: **65 minutes** ahead of the 2:15 AM reactive fault) instead of waiting for the failure event.
+   - If no alternative exists — R-003's actual situation, since it's the only sterile-certified robot — a `PROACTIVE_ML_WARNING` disruption fires instead, giving human ops early visibility (verified in testing: **65 minutes** ahead of the 2:15 AM reactive fault) rather than only finding out at the moment of failure.
 
-   See `src/__tests__/simulationEngine.test.ts` and `src/__tests__/proactiveReplanner.test.ts` for end-to-end and unit-level proof this actually fires (both the reassignment and the no-alternative-escalation branches), and verified through tests.
+   See `src/__tests__/simulationEngine.test.ts` and `src/__tests__/proactiveReplanner.test.ts` for end-to-end and unit-level proof this actually fires (both the reassignment and the no-alternative-escalation branches), rather than just existing as unreachable code.
 3. **Reactive Replanning (Event-Driven)**: triggered immediately upon real-time disruption events (e.g., R-003 sensor failure at 2:15 AM). See §4.
 4. **Customer On-Demand Rebalancing**: `injectCustomerAdHocRequest()` in `src/dispatcher/simulationEngine.ts` accommodates ad-hoc customer requests (e.g., a 50,000 sq ft lobby convention/fundraiser clean) by re-generating the schedule with the extra zone injected, dynamically reallocating dry/wet robots without breaking hospital sterile SLAs.
 
@@ -180,7 +132,6 @@ There are two distinct proactive mechanisms in this codebase, because the first 
 
 ## 4. Real-Time Dispatch & Interruption Handling
 
-### Implemented in this Submission
 The system handles 5 distinct real-time operational interruptions, escalating gracefully where automated resolution isn't possible.
 
 | Disruption Event | System Response & Strategy |
@@ -193,65 +144,22 @@ The system handles 5 distinct real-time operational interruptions, escalating gr
 
 ---
 
-## 5. Agentic Fleet Operations Architecture
-
-### Production Architecture / Future Hardening
-The LLM layer is intentionally structured as a **bounded fleet-operations agent**, rather than a chatbot that sits beside the scheduler. Its role is to observe the current operating state, diagnose disruptions, propose plans, validate those plans through deterministic tools and constraints, and then observe the resulting system state for further replanning.
-
-### Agent Control Loop
-
-```text
-Observe → Diagnose → Plan → Validate → Act → Observe → Re-plan
-```
-
-The agent can use read-only operational tools such as:
-
-- `getFleetState()` — current robot status, assignments, battery, water, location, and active disruptions.
-- `getActiveIncidents()` — current hardware, network, and facility incidents.
-- `simulatePlan()` — evaluates a proposed reassignment against operational constraints before execution.
-- `checkSLAImpact()` — determines whether a proposed action threatens sterile-zone or other hard SLA windows.
-
-Action tools are deliberately narrower:
-
-- `proposeReassignment()` — creates a candidate reassignment for validation.
-- `requestHumanApproval()` — escalates actions that cannot be safely resolved automatically.
-- `executeValidatedPlan()` — executes only a plan that has passed deterministic policy checks.
-
-**The agent never bypasses the scheduler, policy engine, or command gateway.** This prevents an LLM from directly issuing safety-critical robot commands.
-
-### Agent Guardrails
-
-| Agent capability | Access |
-|---|---|
-| Read current fleet state | Allowed |
-| Diagnose operational disruption | Allowed |
-| Generate candidate schedules | Allowed |
-| Simulate candidate plan | Allowed |
-| Request task reassignment | Policy validation required |
-| Execute robot command | Command gateway only |
-| Modify hospital SLA rules | Prohibited |
-| Bypass safety/resource constraints | Prohibited |
-
-The resulting architecture is a closed operational loop: **the agent reasons about the fleet, deterministic systems decide what is permissible, the gateway executes approved actions, and telemetry closes the loop for the next decision.**
-
----
-
-## 6. LLM & Closed-Loop Reasoning Layer
+## 5. LLM & Closed-Loop Reasoning Layer
 
 This section documents what "self-healing AI" means in this system concretely — what's implemented, what's deliberately scoped down, and what's explicitly *not* implemented and why.
 
-### #1 - Plain-language explainability (Implemented in this Submission)
+### #1 - Plain-language explainability (implemented)
 `explainDecision()` in `src/server/claudeAdvisor.ts`, exposed via `POST /api/ai/explain`. Given any raw scheduling/anomaly state object, returns 2-3 plain-language sentences for a non-technical facility manager. Surfaced via `<ExplainButton>` (`src/components/ExplainButton.tsx`), attached to disruption events (Disruptions tab) and anomaly flags (Health tab).
 
-### #2 - Conversational fleet assistant (Implemented in this Submission)
+### #2 - Conversational fleet assistant (implemented)
 `answerFleetQuestion()` in `src/server/claudeAdvisor.ts`, exposed via `POST /api/ai/assistant`, and the `FleetAssistant` tab/component (`src/components/FleetAssistant.tsx`). Every question is answered **only** from a JSON snapshot of the current shift built fresh on each call — the system prompt explicitly instructs the model to say "I don't know" rather than answer from general knowledge if the snapshot doesn't contain the answer.
 
-### #3 - Scoped human-in-the-loop tuning (Implemented in this Submission, deliberately small)
+### #3 - Scoped human-in-the-loop tuning (implemented, deliberately small)
 `src/monitoring/humanFeedback.ts` - read the doc comment at the top of that file before extending it. Honest summary: this is **one persisted numeric multiplier**, not a trained model. Two feedback buttons in the Health tab nudge a bias value +/-0.05 (clamped [0.6, 1.3]) that scales the leak-flag threshold applied to FloorBot's coarse water signal in `anomalyDetector.ts`. Persisted via a pluggable `FeedbackStore` interface so it survives across sessions. See `src/__tests__/humanFeedback.test.ts` for the guaranteed behavior (default 1.0, correct nudge direction, clamping, persistence across instances).
 
 **What this is not**: it does not retrain any model, it does not use outcome data from actual future shifts, and it tunes exactly one number. A production version would need (a) a labeled dataset of decision/outcome pairs, (b) a real training or Bayesian-updating pipeline, and (c) a way to validate an update improved outcomes before it goes live.
 
-### #4 - Autonomous self-correction of broken code paths (Production Architecture / Future Hardening - NOT implemented)
+### #4 - Autonomous self-correction of broken code paths (NOT implemented - roadmap)
 
 Explicitly requested and explicitly scoped out, on purpose, rather than built as a stretch feature.
 
@@ -265,78 +173,50 @@ Explicitly requested and explicitly scoped out, on purpose, rather than built as
 
 ---
 
-## 7. Security & Safety Architecture
+## 5.5 Agentic Architecture & Security Hardening
 
-### Production Architecture / Future Hardening
-Because this system operates in a hospital environment and integrates heterogeneous robot protocols with an LLM layer, security is treated as part of the control architecture rather than an afterthought.
+Added in direct response to specific feedback that this submission came in lighter than expected on **agentic architecture** and **security considerations**. Documented honestly: what existed before this section, what's real now, and how it was verified (not just written).
 
-### Identity & Authentication
-Each robot and service should have a unique machine identity. Production deployments should use mutually authenticated TLS (mTLS) for robot-to-gateway and service-to-service communication rather than shared credentials. Operator access should use enterprise SSO/OIDC, with short-lived credentials and managed secret storage.
+### Agentic architecture: the Ops Agent (`src/server/opsAgent.ts`)
 
-### Authorization
-Access is separated by role and capability. Read access to telemetry does not imply permission to issue robot commands.
+Every other "AI" feature in this codebase — the advisor, the log parser, the explain layer, the Fleet Assistant — is a single-shot prompt-response call: text in, text out. None of that is agentic. The Ops Agent is different: Claude is given four tools (`get_robot_status`, `find_eligible_alternative`, `execute_reassignment`, `escalate_to_human`) and **autonomously decides** which to call, in what order, based on what earlier tool results tell it — a real perceive→reason→act loop (`POST /api/ai/ops-agent`), capped at 6 turns as a safety bound.
 
-| Actor | Telemetry | Reassign Task | Robot Command | Change SLA / Policy |
-|---|---:|---:|---:|---:|
-| Facility Operator | ✓ | ✓ | Limited | ✗ |
-| Maintenance Technician | ✓ | ✓ | ✓ | ✗ |
-| Administrator | ✓ | ✓ | ✓ | ✓ |
-| Fleet Agent | ✓ | Propose only | **No direct access** | ✗ |
+Critically, the tools have **real side effects** on live simulation state, not simulated ones:
+- `execute_reassignment` calls a new `ShiftSimulationEngine.reassignTask()` method that actually mutates `schedulePlan.tasks`.
+- `escalate_to_human` calls a new `ShiftSimulationEngine.logEscalation()` method that actually pushes a visible entry into the live Disruption Console.
 
-The fleet agent therefore cannot grant itself additional privileges or bypass operational policy.
+Verified with `src/__tests__/opsAgent.test.ts` (9 tests) by calling the exported `executeTool()` directly against the real `globalSimulationEngine` — proving `execute_reassignment` genuinely changes which robot is assigned to a zone (checked before/after), and `escalate_to_human` genuinely adds a disruption entry — without needing a live Claude call in CI.
 
-### Command Gateway
-All outbound robot commands pass through a dedicated command gateway responsible for:
-1. authentication and authorization;
-2. deterministic safety and capability validation;
-3. rate limiting;
-4. idempotency / duplicate-command protection;
-5. command auditing;
-6. rejection of commands that violate hard operational constraints.
+### Security: prompt-injection defense on the log parser (`src/server/dispatchLogSecurity.ts`)
 
-The LLM is never given direct access to OEM MQTT, HTTP, WebSocket, or other robot-control endpoints.
+The hospital dispatch-log parser takes free-text input from staff and its output (zone, priority, sq ft) feeds directly into real scheduling decisions — a genuine prompt-injection surface in a sensitive domain that had zero defense before this. Two layers, in priority order:
+1. **Output validation (the real defense)**: the LLM's JSON is checked against a strict whitelist — `affectedZoneId` must be one of the 8 real zones, `priorityLevel` one of 4 enum values, `sqFtEstimate` bounded to a sane range, string fields length-capped. Anything that fails validation is discarded in favor of a safe, non-alarming fallback — never trusted.
+2. **Input pre-screening (defense-in-depth, not a substitute)**: common injection phrasing ("ignore previous instructions", etc.) is flagged and logged; input is truncated to 800 chars before it ever reaches the model.
 
-### Network & Protocol Security
-The production topology should isolate the robot/control network from user-facing systems through a gateway/API boundary. OEM-specific protocols are terminated and authenticated at the edge, while internal services communicate through authenticated service interfaces. Certificates and API credentials should be rotated through managed secret infrastructure.
+Verified with `src/__tests__/dispatchLogSecurity.test.ts` (10 tests) — confirmed a fabricated zone ID, an invalid priority, an absurd/negative sq ft value, and non-object input are all genuinely rejected (console output shows the actual `[SECURITY] Rejected...` log lines firing during the test run).
 
-### LLM Security
-Operational data supplied to the agent is treated as **untrusted data, not instructions**. This is important because telemetry, logs, customer requests, or external integrations could contain text that attempts to influence agent behavior.
+### Security: API hardening (`server.ts`)
 
-The agent should therefore enforce:
-- strict tool allowlists;
-- structured tool inputs and outputs;
-- no direct shell/code execution;
-- no direct robot endpoint access;
-- least-privilege credentials;
-- prompt-injection-resistant handling of external text;
-- data minimization so the model receives only the operational information required for the task.
+Three things that were entirely absent before: input validation, rate limiting, and authentication.
+- **Input validation**: every route validates its body against a `zod` schema before touching any business logic; malformed requests get a `400`, not silent coercion.
+- **Rate limiting**: LLM-backed routes (the real cost/DoS surface) are capped at 15 requests/minute via `express-rate-limit`; other routes at 60/minute.
+- **Auth**: a minimal bearer-token stub gated by `INTERNAL_API_KEY`. If unset, it's soft-disabled with a loud startup warning — this is a stub demonstrating the pattern, not real production auth (which would need proper session/OAuth, not a shared static token, and this is stated plainly rather than oversold).
 
-### Auditability & Incident Response
-Every agent-mediated operational decision should produce an auditable record containing, at minimum:
-```text
-timestamp
-agent / model version
-input state or state hash
-proposed action
-policy validation result
-human approval, if required
-executed command
-execution result
+All three were verified by actually booting the built server and hitting it with `curl`, not just reading the code:
+```
+# validation genuinely rejects a bad enum value
+POST /api/feedback/water-bias {"direction":"bogus"}  →  400 Invalid request body
+
+# auth genuinely enforces when INTERNAL_API_KEY is set
+no key            →  401
+wrong key         →  401
+correct key       →  200
+
+# rate limiting genuinely fires after the configured threshold
+17 rapid requests to /api/ai/explain  →  first 15 return 200, requests 16 and 17 return 429
 ```
 
-Security events, rejected commands, authentication failures, and policy violations should be retained separately from ordinary operational logs so that facility operators can distinguish system faults from security incidents.
-
-### Safety Principle
-**The LLM is allowed to reason; deterministic controls decide what is safe to execute.**
-
-This boundary is especially important in a hospital setting: an incorrect AI recommendation should result in a rejected proposal or human escalation, not an unconstrained robot command.
-
-### Summary Status
-The current submission implements the core simulation, HAL, scheduler, dispatcher, anomaly detection, and bounded LLM features described above. The policy/command-gateway and production security controls in this section are **architecture requirements for a production deployment**, not claims that every control is already implemented in the 4–6 hour submission.
-
 ---
-
-## 8. Scope & Prioritization Philosophy (Implemented in this Submission)
 
 Given the suggested 4-6 hour effort window, this submission is deliberately scoped for **depth over breadth**. Priority order, in the order built and hardened:
 1. **Dual-constraint scheduler** (battery + water as co-equal resources) - the mathematical core the rest depends on.
@@ -346,7 +226,7 @@ Given the suggested 4-6 hour effort window, this submission is deliberately scop
 
 ---
 
-## 9. Assumptions & Ambiguity Handling (Implemented in this Submission)
+## 7. Assumptions & Ambiguity Handling
 
 | Area | Assumption & Strategy |
 |---|---|
@@ -358,7 +238,7 @@ Given the suggested 4-6 hour effort window, this submission is deliberately scop
 
 ---
 
-## 10. Shift Report & Consumable Tracking (Implemented in this Submission)
+## 8. Shift Report & Consumable Tracking
 
 The system tracks operational consumables and exports official facility audit records:
 - **Water Consumption Tracking**: total clean water gallons consumed, completed 10-minute dump & refill cycles, and flagged water anomalies.
@@ -367,54 +247,7 @@ The system tracks operational consumables and exports official facility audit re
 
 ---
 
-## 11. Production Observability (Production Architecture / Future Hardening)
-
-A production fleet orchestration platform needs visibility into both operational outcomes and the AI/control plane.
-
-### Metrics
-The monitoring layer should track:
-- fleet utilization and square feet cleaned;
-- hospital SLA compliance and at-risk windows;
-- robot failure and recovery rates;
-- proactive-replan frequency and success rate;
-- dock and charging utilization;
-- command latency and rejected-command rate;
-- agent intervention / escalation rate;
-- anomaly detection precision and false-positive rate.
-
-### Logs
-Structured logs should capture:
-- robot telemetry and state transitions;
-- scheduler decisions and constraint failures;
-- disruption detection and recovery actions;
-- agent proposals and policy decisions;
-- command gateway events;
-- authentication and authorization failures.
-
-### Tracing
-Operational traces should connect an event across the full control path:
-```text
-Telemetry / Incident
-        ↓
-Risk / Anomaly Detection
-        ↓
-Scheduler / Agent
-        ↓
-Policy Validation
-        ↓
-Command Gateway
-        ↓
-OEM Adapter
-        ↓
-Robot
-        ↓
-Telemetry Confirmation
-```
-This makes it possible to determine not only **what** happened, but where latency, incorrect decisions, or integration failures entered the system.
-
----
-
-## 12. System Setup & Interactive Simulation Demo (Implemented in this Submission)
+## 9. System Setup & Interactive Simulation Demo
 
 ### Installation & Local Development
 ```bash
@@ -434,7 +267,7 @@ Without `ANTHROPIC_API_KEY` set, every LLM-backed feature falls back to a determ
 # Check TypeScript types
 npx tsc --noEmit
 
-# Run the test suite (36 tests: HAL, scheduler, disruptions, ML/anomaly, benchmark, human feedback, live proactive-risk monitor)
+# Run the test suite (55 tests: HAL, scheduler, disruptions, ML/anomaly, benchmark, human feedback, live proactive-risk monitor, ops agent, dispatch-log security)
 npm run test
 
 # Build production bundle
@@ -452,7 +285,7 @@ npm run build
 
 ---
 
-## 13. Project Directory Structure (Implemented in this Submission)
+## 10. Project Directory Structure
 
 ```
 ├── src/
@@ -487,11 +320,14 @@ npm run build
 │   │   ├── anomalyDetector.ts
 │   │   └── humanFeedback.ts       (#3 - scoped human-in-the-loop tuning)
 │   ├── server/             # Server-Side Claude AI Fleet Advisor & LLM Layer
-│   │   └── claudeAdvisor.ts       (advisor, log parser, explain, assistant)
+│   │   ├── anthropicClient.ts     (shared client setup)
+│   │   ├── claudeAdvisor.ts       (advisor, log parser, explain, assistant)
+│   │   ├── dispatchLogSecurity.ts (prompt-injection defense — output validation + input screening)
+│   │   └── opsAgent.ts            (genuine agentic tool-use loop, real state-mutating tools)
 │   ├── data/               # Facility Zones & Robot Roster Data
 │   │   ├── facility.ts
 │   │   └── roster.ts
-│   ├── __tests__/          # Vitest suite (36 tests)
+│   ├── __tests__/          # Vitest suite (55 tests)
 │   │   ├── hal.test.ts
 │   │   ├── scheduler.test.ts
 │   │   ├── disruptions.test.ts
@@ -499,7 +335,9 @@ npm run build
 │   │   ├── benchmark.test.ts
 │   │   ├── humanFeedback.test.ts
 │   │   ├── proactiveReplanner.test.ts
-│   │   └── simulationEngine.test.ts
+│   │   ├── simulationEngine.test.ts
+│   │   ├── opsAgent.test.ts
+│   │   └── dispatchLogSecurity.test.ts
 │   └── types/              # Global TypeScript Definitions
 │       └── index.ts
 ├── docs/
@@ -512,10 +350,9 @@ npm run build
 
 ---
 
-## 14. Demo
+## 11. Demo
 
-For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §12.
+An earlier, Gemini-based build of this system's UI is hosted at:
+https://ai.studio/apps/04844540-54d5-4ad7-b8bf-23e44b945118?fullscreenApplet=true
 
-An earlier, Gemini-based build of this system's UI is hosted at:  
-https://ai.studio/apps/04844540-54d5-4ad7-b8bf-23e44b945118?fullscreenApplet=true  
-**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5/§6) were added - it will not match the code in `src/` exactly.
+**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly. For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §9.

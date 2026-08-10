@@ -519,6 +519,61 @@ export class ShiftSimulationEngine {
     }
   }
 
+  /**
+   * Real state mutation used by the Ops Agent's `execute_reassignment` tool
+   * (src/server/opsAgent.ts). Unlike the automatic live monitor
+   * (evaluateProactiveRiskMonitoring), this is invoked when Claude, acting as an
+   * agent, decides a reassignment is the right action after reasoning over tool
+   * results — this method is the actual side effect that decision produces.
+   */
+  public reassignTask(zoneId: string, fromRobotId: string, toRobotId: string): { success: boolean; message: string } {
+    const task = this.schedulePlan.tasks.find(
+      t => t.zoneId === zoneId && t.robotId === fromRobotId && (t.taskType === 'clean' || t.taskType === 'sanitize')
+    );
+    if (!task) {
+      return { success: false, message: `No active task found for ${fromRobotId} in ${zoneId}.` };
+    }
+    const toRobot = FLEET_ROSTER.find(r => r.id === toRobotId);
+    if (!toRobot) {
+      return { success: false, message: `Unknown robot ${toRobotId}.` };
+    }
+    task.robotId = toRobotId;
+    this.notify();
+    return { success: true, message: `Reassigned ${zoneId} from ${fromRobotId} to ${toRobotId}.` };
+  }
+
+  /**
+   * Real state mutation used by the Ops Agent's `escalate_to_human` tool. Pushes an
+   * actual disruption event into the live feed — the escalation the agent decided on
+   * genuinely appears in the Disruption Console, not just in a chat transcript.
+   */
+  public logEscalation(robotId: string, zoneId: string | undefined, title: string, description: string, recommendedActions: string, mttr?: number): DisruptionEvent {
+    const event: DisruptionEvent = {
+      id: `DISRUPT-AGENT-ESCALATION-${robotId}-${this.currentMin}`,
+      timestampMinutes: this.currentMin,
+      timeDisplay: this.minToTimeString(this.currentMin),
+      type: 'PROACTIVE_ML_WARNING',
+      robotId,
+      zoneId,
+      severity: 'critical',
+      title,
+      description,
+      status: 'escalated',
+      actionTaken: 'Escalated by the Ops Agent after autonomous tool-driven reasoning — see agent transcript for the decision trail.',
+      humanEscalationRequired: true,
+      escalationDetails: recommendedActions,
+      predictedMTTRMinutes: mttr
+    };
+    this.disruptions.unshift(event);
+    this.notify();
+    return event;
+  }
+
+  /** Read-only status lookup used by the Ops Agent's `get_robot_status` tool. */
+  public getRobotStatus(robotId: string): RobotState | null {
+    return this.robotStates.get(robotId) || null;
+  }
+
   public getSnapshot(): SimulationStepState {
     const activeAlerts = this.disruptions.filter(d => d.status === 'active' || d.status === 'escalated').length;
     return {
