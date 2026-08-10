@@ -1,0 +1,103 @@
+<svg viewBox="0 0 1180 760" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace, monospace">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b" />
+    </marker>
+  </defs>
+  <rect width="1180" height="760" fill="#0a0c10" />
+
+  <!-- Title -->
+  <text x="590" y="34" text-anchor="middle" fill="#e2e8f0" font-size="20" font-weight="bold">Multi-OEM Fleet Orchestration System — Architecture &amp; Data Flow</text>
+  <text x="590" y="54" text-anchor="middle" fill="#64748b" font-size="12">Regional General Hospital · MBody AI</text>
+
+  <!-- OEM adapters row -->
+  <g font-size="12">
+    <rect x="40" y="90" width="230" height="70" rx="10" fill="#111827" stroke="#334155" />
+    <text x="155" y="112" text-anchor="middle" fill="#93c5fd" font-weight="bold">AutoScrubAdapter</text>
+    <text x="155" y="130" text-anchor="middle" fill="#94a3b8">REST + MQTT/JSON</text>
+    <text x="155" y="146" text-anchor="middle" fill="#64748b">GPS-drift smoothing</text>
+
+    <rect x="300" y="90" width="230" height="70" rx="10" fill="#111827" stroke="#334155" />
+    <text x="415" y="112" text-anchor="middle" fill="#c4b5fd" font-weight="bold">CleanPathAdapter</text>
+    <text x="415" y="130" text-anchor="middle" fill="#94a3b8">gRPC + WebSocket/Protobuf</text>
+    <text x="415" y="146" text-anchor="middle" fill="#64748b">15s reconnect grace period</text>
+
+    <rect x="560" y="90" width="230" height="70" rx="10" fill="#111827" stroke="#334155" />
+    <text x="675" y="112" text-anchor="middle" fill="#fbbf24" font-weight="bold">FloorBotAdapter</text>
+    <text x="675" y="130" text-anchor="middle" fill="#94a3b8">HTTP CGI / XML polling</text>
+    <text x="675" y="146" text-anchor="middle" fill="#64748b">coarse bucket → min/max range</text>
+
+    <rect x="820" y="90" width="230" height="70" rx="10" fill="#1e1030" stroke="#7c3aed" stroke-dasharray="4 3" />
+    <text x="935" y="112" text-anchor="middle" fill="#c4b5fd" font-weight="bold">CyberCleanAdapter</text>
+    <text x="935" y="130" text-anchor="middle" fill="#94a3b8">REST/JSON (4th-OEM proof)</text>
+    <text x="935" y="146" text-anchor="middle" fill="#64748b">zero scheduler changes needed</text>
+  </g>
+
+  <!-- Arrows down to HAL Registry -->
+  <path d="M155,160 L155,190 L590,190 L590,215" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+  <path d="M415,160 L415,205 L590,205 L590,215" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+  <path d="M675,160 L675,205 L590,205 L590,215" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+  <path d="M935,160 L935,190 L590,190 L590,215" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+
+  <!-- HAL Registry -->
+  <rect x="410" y="215" width="360" height="55" rx="10" fill="#0f2027" stroke="#0891b2" />
+  <text x="590" y="240" text-anchor="middle" fill="#22d3ee" font-weight="bold" font-size="13">HAL Registry — NormalizedTelemetry</text>
+  <text x="590" y="258" text-anchor="middle" fill="#67e8f9" font-size="11">common schema: robotId, batteryPct, waterPct/coarseWaterLevel, position, status</text>
+
+  <path d="M590,270 L590,300" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+
+  <!-- Scheduler -->
+  <rect x="330" y="300" width="520" height="90" rx="10" fill="#111827" stroke="#334155" />
+  <text x="590" y="325" text-anchor="middle" fill="#a5b4fc" font-weight="bold" font-size="13">FleetScheduler (Dual-Constraint OR + ML Risk Weighting)</text>
+  <text x="590" y="345" text-anchor="middle" fill="#94a3b8" font-size="11">binding constraint = min(battery-minutes, water-minutes); floor-material multiplier scales water use</text>
+  <text x="590" y="362" text-anchor="middle" fill="#94a3b8" font-size="11">DockManager: queue-wait vs. reroute-to-alt-dock, weighing idle battery loss</text>
+  <text x="590" y="379" text-anchor="middle" fill="#94a3b8" font-size="11">FailurePredictor (ML): time-varying risk curve, penalizes high-risk windows for sterile zones</text>
+
+  <path d="M590,390 L590,420" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+
+  <!-- Dispatcher -->
+  <rect x="330" y="420" width="520" height="65" rx="10" fill="#111827" stroke="#334155" />
+  <text x="590" y="445" text-anchor="middle" fill="#86efac" font-weight="bold" font-size="13">ShiftSimulationEngine (Dispatcher)</text>
+  <text x="590" y="463" text-anchor="middle" fill="#94a3b8" font-size="11">ticks the 12-hr shift, evaluates the 5 disruptions, updates robot/zone state, offline-mission reconcile</text>
+
+  <path d="M590,485 L590,515" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+
+  <!-- Monitor + LLM layer row -->
+  <rect x="140" y="515" width="340" height="90" rx="10" fill="#111827" stroke="#334155" />
+  <text x="310" y="538" text-anchor="middle" fill="#fca5a5" font-weight="bold" font-size="13">AnomalyDetector / ConsumableMonitor</text>
+  <text x="310" y="556" text-anchor="middle" fill="#94a3b8" font-size="11">leak-risk scoring (R-008), battery health,</text>
+  <text x="310" y="571" text-anchor="middle" fill="#94a3b8" font-size="11">OEM error breakdown, ML feature vectors</text>
+  <text x="310" y="590" text-anchor="middle" fill="#7c8ba1" font-size="10">leak-flag threshold × human-feedback bias</text>
+
+  <rect x="700" y="515" width="340" height="90" rx="10" fill="#1e1030" stroke="#7c3aed" />
+  <text x="870" y="538" text-anchor="middle" fill="#c4b5fd" font-weight="bold" font-size="13">Claude LLM Layer (claudeAdvisor.ts)</text>
+  <text x="870" y="556" text-anchor="middle" fill="#a5b4fc" font-size="11">#1 explainDecision · #2 answerFleetQuestion</text>
+  <text x="870" y="571" text-anchor="middle" fill="#a5b4fc" font-size="11">advisor / log parser (existing)</text>
+  <text x="870" y="590" text-anchor="middle" fill="#7c8ba1" font-size="10">grounded ONLY in supplied state, never invents fleet facts</text>
+
+  <path d="M310,515 L310,485" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+  <path d="M870,515 L870,485" stroke="#64748b" fill="none" marker-end="url(#arrow)" />
+
+  <!-- Human feedback loop -->
+  <rect x="480" y="620" width="220" height="65" rx="10" fill="#1e1030" stroke="#7c3aed" stroke-dasharray="4 3" />
+  <text x="590" y="643" text-anchor="middle" fill="#c4b5fd" font-weight="bold" font-size="12">#3 HumanFeedbackController</text>
+  <text x="590" y="660" text-anchor="middle" fill="#7c8ba1" font-size="10">persisted heuristic multiplier,</text>
+  <text x="590" y="674" text-anchor="middle" fill="#7c8ba1" font-size="10">NOT a trained model</text>
+
+  <path d="M310,605 L310,652 L480,652" stroke="#7c3aed" fill="none" marker-end="url(#arrow)" stroke-dasharray="4 3" />
+  <path d="M870,605 L870,652 L700,652" stroke="#7c3aed" fill="none" marker-end="url(#arrow)" stroke-dasharray="4 3" />
+
+  <!-- UI -->
+  <rect x="140" y="720" width="900" height="30" rx="8" fill="#0d1117" stroke="#30363d" />
+  <text x="590" y="740" text-anchor="middle" fill="#94a3b8" font-size="11">React UI: Dashboard · Schedule · HAL Inspector · Disruptions · Health · Fleet Assistant · Shift Report</text>
+  <path d="M310,605 L200,720" stroke="#334155" fill="none" marker-end="url(#arrow)" stroke-dasharray="2 3" />
+  <path d="M870,605 L980,720" stroke="#334155" fill="none" marker-end="url(#arrow)" stroke-dasharray="2 3" />
+
+  <!-- Legend -->
+  <g font-size="10" fill="#64748b">
+    <rect x="40" y="700" width="14" height="10" fill="#111827" stroke="#334155" />
+    <text x="60" y="709">core deterministic/ML pipeline</text>
+    <rect x="40" y="716" width="14" height="10" fill="#1e1030" stroke="#7c3aed" stroke-dasharray="2 2" />
+    <text x="60" y="725">LLM / human-feedback layer (added on top, not required for core scheduling)</text>
+  </g>
+</svg>
