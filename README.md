@@ -258,6 +258,13 @@ The system tracks operational consumables and exports official facility audit re
 
 ## 9. System Setup & Interactive Simulation Demo
 
+This system's UI is hosted at: https://claude.ai/public/artifacts/7ec03ab1-068c-41d7-a686-d0a6a27aab74
+For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project as below.
+
+An earlier, Gemini-based build of this system's UI is hosted at:
+https://ai.studio/apps/04844540-54d5-4ad7-b8bf-23e44b945118?fullscreenApplet=true
+**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly.
+
 ### Installation & Local Development
 ```bash
 # Install dependencies
@@ -361,8 +368,4 @@ npm run build
 
 ## 11. Demo
 
-For an up-to-date interactive preview of the current logic, use `demo/fleet-orchestrator-app.jsx` (see `demo/README.md`), or run the actual project per §9.
 
-An earlier, Gemini-based build of this system's UI is hosted at:
-https://ai.studio/apps/04844540-54d5-4ad7-b8bf-23e44b945118?fullscreenApplet=true
-**Note:** that link reflects a snapshot from before this repository's code was migrated from Gemini to Claude and before the dual-constraint scheduler, HAL extensibility proof, and LLM/human-feedback layer (§5) were added - it will not match the code in `src/` exactly.
