@@ -1,7 +1,24 @@
-# Multi-OEM Fleet Orchestration System (MBody AI)
-**AI Lead Engineer Candidate Technical Submission**
-**Facility:** Regional General Hospital (8 Robots, 8 Zones)
-**Primary Objective:** Total Operating Cost Optimization (Maximizing Sq Ft Cleaned & Fleet Utilization) under Hard Hospital SLA Constraints
+# Multi-OEM Fleet Orchestration System 
+
+## 0. Project overview
+
+**Problem:** A hospital needs its mixed-vendor fleet of autonomous cleaning robots scheduled and re-planned in real time, under battery and water constraints, with sterile-zone SLA compliance as a hard requirement.
+
+**User:** Facility managers who need visibility and control; hospital staff who report disruptions; the system itself, which acts as its own internal user through the Ops Agent's tools.
+
+**Input:** Robot roster and zone list with constraints (battery/water capacity, floor material, sterile requirements); live telemetry from 4 different OEM protocols; free-text dispatch notes from staff; disruption events.
+
+**Output:** A generated shift schedule (robot-to-zone assignments with timing); real-time re-plans when disruptions occur; a shift report with SLA compliance and cost estimates; natural-language answers grounded in live state.
+
+**Demo:** https://claude.ai/public/artifacts/7ec03ab1-068c-41d7-a686-d0a6a27aab74
+
+**Architecture:** 7-layer pipeline — data → HAL → scheduler → dispatcher → monitoring/ML → LLM server layer → UI — where each layer only depends on the layer beneath it.
+
+**Tests:** 55 tests across 10 files: behavior, security (attacks confirmed rejected, not just valid input accepted), side-effect (state mutation verified before/after), and scale (500-robot benchmark).
+
+**Evaluation:** see the "Explain Evaluation" section below
+
+**Limitations:** State doesn't persist across restarts; the Ops Agent has no live UI trigger; the scheduler is a heuristic, not globally optimal; single-process ceiling on scale.
 
 ---
 
